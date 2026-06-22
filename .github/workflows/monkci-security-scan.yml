@@ -13,6 +13,7 @@ name: "Monk CI — Security & Quality"
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  workflow_call:    
 
 permissions:
   contents: read
