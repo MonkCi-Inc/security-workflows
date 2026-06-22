@@ -443,7 +443,7 @@ jobs:
 
             // ── Assemble comment ──
             const body = [
-              `## 🐵 Monk CI — Security & Quality Report`,
+              `##  Monk CI — Security & Quality Report`,
               ``,
               `| Status | Check | Details |`,
               `|--------|-------|---------|`,
