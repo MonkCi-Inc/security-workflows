@@ -266,7 +266,7 @@ jobs:
       # Also run a table-format scan for the PR comment
       - name: Generate human-readable report
         if: always()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@6c175e9c4083a92bbca2f9724c8a5e33bc2d97a5
         with:
           scan-type: "fs"
           scan-ref: "."
