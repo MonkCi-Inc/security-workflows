@@ -413,7 +413,7 @@ jobs:
             const hasFailures = [gitleaksResult, semgrepData?.result, trivyResult, iacResult]
               .some(r => r === 'fail' || r === 'failure');
 
-            const logoUrl = 'https://monkci.com/logo.png';
+            const logoUrl = 'https://monkci.com/brand/logo-new.svg';
             const dashboardUrl = `https://monkci.com/shield/repos/${encodeURIComponent(context.repo.repo)}`;
 
             const body = [
