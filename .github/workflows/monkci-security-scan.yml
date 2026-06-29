@@ -1,19 +1,18 @@
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  Monk CI — Security & Code Quality Scanning                ║
-# ║                                                            ║
-# ║  Drop this in: monkci/security-workflows                   ║
-# ║  Path:         .github/workflows/monk-security-scan.yml    ║
-# ║                                                            ║
-# ║  Trigger: org-level ruleset with required_workflows rule   ║
-# ║  Auth:    GITHUB_TOKEN only — zero customer secrets        ║
-# ╚══════════════════════════════════════════════════════════════╝
+# Monk CI — Security & Code Quality Scanning
+#
+# Lives in:  monkci/shield
+# Path:      .github/workflows/scan.yml
+#
+# Triggered via org-level ruleset (required workflow) in customer orgs.
+# Each scan job uploads its own SARIF to Monk CI via miglet as a step —
+# no separate upload job, no artifact roundtrip.
 
-name: "Monk CI — Security & Quality"
+name: "Monk CI Shield"
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  workflow_call:    
+  workflow_call:
 
 permissions:
   contents: read
@@ -25,55 +24,56 @@ concurrency:
   group: monk-scan-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# ─────────────────────────────────────────────────────────────
+env:
+  GITLEAKS_VERSION: "8.21.2"
+  TRIVY_VERSION: "0.71.2"
+  CHECKOV_VERSION: "3.2.346"
+
 jobs:
 
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # SECRET DETECTION — Gitleaks
-  # Scans commits in the PR for leaked API keys, tokens, creds
-  # Auth: none (runs locally against checked-out git history)
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # ─────────────────────────────────────────────────────────
+  # Secret Detection — Gitleaks
+  # ─────────────────────────────────────────────────────────
   secret-detection:
-    name: "🔐 Secret Detection"
-    runs-on: ubuntu-latest          # ← swap to monkci-runners-4vcpu for prod
+    name: "Secret Detection"
+    runs-on: monkci-runners-4vcpu
     timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0            # full history needed for diff-based scan
+          fetch-depth: 0
 
       - name: Install Gitleaks
         run: |
-          GITLEAKS_VERSION="8.21.2"
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
             | tar -xz -C /usr/local/bin gitleaks
           gitleaks version
 
-      - name: Run Gitleaks (PR diff only)
+      - name: Run Gitleaks
         id: gitleaks
         run: |
-          # Scan only the commits in this PR, not the entire repo history
           gitleaks detect \
             --source=. \
             --log-opts="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
             --report-format=sarif \
-            --report-path=gitleaks-results.sarif \
+            --report-path=gitleaks.sarif \
+            --redact \
             --exit-code=1 \
             --verbose \
           && echo "result=pass" >> "$GITHUB_OUTPUT" \
           || echo "result=fail" >> "$GITHUB_OUTPUT"
 
-      # Note: SARIF upload to Security tab requires GitHub Advanced Security
-      # on private repos. For private repos without GHAS, this step will fail
-      # gracefully — PR comment (in summary job) still works as fallback.
-      - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        continue-on-error: true     # graceful if GHAS not enabled
-        with:
-          sarif_file: gitleaks-results.sarif
-          category: monk-ci-secrets
+      - name: Upload SARIF to Monk CI
+        if: always() && hashFiles('gitleaks.sarif') != ''
+        run: |
+          /opt/monk-ci/miglet sarif-upload \
+            --file=gitleaks.sarif \
+            --repo="${{ github.repository }}" \
+            --pr="${{ github.event.pull_request.number || 0 }}" \
+            --sha="${{ github.event.pull_request.head.sha || github.sha }}" \
+            --scan-type=secrets \
+            --tool=gitleaks
 
       - name: Save result
         if: always()
@@ -87,14 +87,12 @@ jobs:
           path: /tmp/gitleaks-result.txt
           retention-days: 1
 
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # CODE QUALITY & SECURITY — Semgrep (open-source)
-  # Static analysis across 30+ languages
-  # Auth: none — uses OSS engine only, no Semgrep Cloud
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # ─────────────────────────────────────────────────────────
+  # Code Quality & Security — Semgrep (CLI, no Cloud)
+  # ─────────────────────────────────────────────────────────
   code-analysis:
-    name: "🔍 Code Quality & Security"
-    runs-on: ubuntu-latest          # ← swap to monkci-runners-4vcpu for prod
+    name: "Code Quality and Security"
+    runs-on: monkci-runners-4vcpu
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -111,101 +109,70 @@ jobs:
       - name: Detect languages and build config
         id: config
         run: |
-          # Auto-detect languages present in the repo
           CONFIG="--config=p/default --config=p/security-audit --config=p/secrets"
 
           if find . -name "*.py" -not -path "*/node_modules/*" -not -path "*/.venv/*" | head -1 | grep -q .; then
             CONFIG="$CONFIG --config=p/python"
-            echo "  → Python detected"
           fi
-
           if find . \( -name "*.js" -o -name "*.ts" -o -name "*.tsx" -o -name "*.jsx" \) -not -path "*/node_modules/*" | head -1 | grep -q .; then
             CONFIG="$CONFIG --config=p/javascript --config=p/typescript"
-            echo "  → JavaScript/TypeScript detected"
           fi
-
           if find . -name "*.go" -not -path "*/vendor/*" | head -1 | grep -q .; then
             CONFIG="$CONFIG --config=p/golang"
-            echo "  → Go detected"
           fi
-
           if find . \( -name "*.java" -o -name "*.kt" \) | head -1 | grep -q .; then
             CONFIG="$CONFIG --config=p/java"
-            echo "  → Java/Kotlin detected"
           fi
-
           if find . -name "*.rb" | head -1 | grep -q .; then
             CONFIG="$CONFIG --config=p/ruby"
-            echo "  → Ruby detected"
           fi
-
           if find . -name "*.rs" | head -1 | grep -q .; then
             CONFIG="$CONFIG --config=p/rust"
-            echo "  → Rust detected"
           fi
-
           if find . -name "*.php" | head -1 | grep -q .; then
             CONFIG="$CONFIG --config=p/php"
-            echo "  → PHP detected"
-          fi
-
-          # Check for customer overrides
-          if [ -f ".monk-ci.yml" ]; then
-            echo "  → Found .monk-ci.yml (customer overrides)"
           fi
 
           echo "config=$CONFIG" >> "$GITHUB_OUTPUT"
-          echo ""
-          echo "Final Semgrep config: $CONFIG"
 
       - name: Run Semgrep
         id: semgrep
         run: |
           semgrep \
             ${{ steps.config.outputs.config }} \
-            --sarif \
-            --output=semgrep-results.sarif \
-            --exclude="node_modules" \
-            --exclude="vendor" \
-            --exclude=".venv" \
-            --exclude="*.min.js" \
-            --exclude="*generated*" \
+            --sarif --output=semgrep.sarif \
+            --exclude=node_modules --exclude=vendor --exclude=.venv \
+            --exclude="*.min.js" --exclude="*generated*" \
             --metrics=off \
           && echo "result=pass" >> "$GITHUB_OUTPUT" \
           || echo "result=fail" >> "$GITHUB_OUTPUT"
 
-          # Also generate a human-readable summary for the PR comment
           semgrep \
             ${{ steps.config.outputs.config }} \
-            --exclude="node_modules" \
-            --exclude="vendor" \
-            --exclude=".venv" \
-            --exclude="*.min.js" \
-            --exclude="*generated*" \
-            --metrics=off \
-            --json \
-            --output=semgrep-results.json \
-          || true
+            --json --output=semgrep.json \
+            --exclude=node_modules --exclude=vendor --exclude=.venv \
+            --exclude="*.min.js" --exclude="*generated*" \
+            --metrics=off || true
 
-          # Count findings by severity
-          if [ -f semgrep-results.json ]; then
-            ERRORS=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' semgrep-results.json 2>/dev/null || echo "0")
-            WARNINGS=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep-results.json 2>/dev/null || echo "0")
-            INFOS=$(jq '[.results[] | select(.extra.severity == "INFO")] | length' semgrep-results.json 2>/dev/null || echo "0")
+          if [ -f semgrep.json ]; then
+            ERRORS=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' semgrep.json 2>/dev/null || echo "0")
+            WARNINGS=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep.json 2>/dev/null || echo "0")
+            INFOS=$(jq '[.results[] | select(.extra.severity == "INFO")] | length' semgrep.json 2>/dev/null || echo "0")
             echo "errors=$ERRORS" >> "$GITHUB_OUTPUT"
             echo "warnings=$WARNINGS" >> "$GITHUB_OUTPUT"
             echo "infos=$INFOS" >> "$GITHUB_OUTPUT"
-            echo ""
-            echo "Findings: $ERRORS errors, $WARNINGS warnings, $INFOS info"
           fi
 
-      - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        continue-on-error: true
-        with:
-          sarif_file: semgrep-results.sarif
-          category: monk-ci-code-quality
+      - name: Upload SARIF to Monk CI
+        if: always() && hashFiles('semgrep.sarif') != ''
+        run: |
+          /opt/monk-ci/miglet sarif-upload \
+            --file=semgrep.sarif \
+            --repo="${{ github.repository }}" \
+            --pr="${{ github.event.pull_request.number || 0 }}" \
+            --sha="${{ github.event.pull_request.head.sha || github.sha }}" \
+            --scan-type=code \
+            --tool=semgrep
 
       - name: Save result
         if: always()
@@ -227,67 +194,59 @@ jobs:
           path: /tmp/semgrep-result.json
           retention-days: 1
 
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # DEPENDENCY AUDIT — Trivy (filesystem scan)
-  # Scans lockfiles for known CVEs
-  # Auth: none — downloads public vuln DB from ghcr.io
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # ─────────────────────────────────────────────────────────
+  # Dependency Audit — Trivy (CLI install, no marketplace action)
+  # ─────────────────────────────────────────────────────────
   dependency-scan:
-    name: "📦 Dependency Audit"
-    runs-on: ubuntu-latest          # ← swap to monkci-runners-4vcpu for prod
+    name: "Dependency Audit"
+    runs-on: monkci-runners-4vcpu
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run Trivy (filesystem — dependencies only)
-        uses: aquasecurity/trivy-action@6c175e9c4083a92bbca2f9724c8a5e33bc2d97a5  # v0.36.0
+      - name: Install Trivy
+        run: |
+          curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.deb" \
+            -o trivy.deb
+          sudo dpkg -i trivy.deb
+          trivy version
+
+      - name: Run Trivy
         id: trivy
-        with:
-          scan-type: "fs"
-          scan-ref: "."
-          format: "sarif"
-          output: "trivy-results.sarif"
-          severity: "CRITICAL,HIGH,MEDIUM"
-          scanners: "vuln"          # dependencies only, not misconfig
-          exit-code: "1"            # fail if findings exist
-        continue-on-error: true     # capture result without failing job
+        run: |
+          trivy fs . \
+            --scanners vuln \
+            --severity CRITICAL,HIGH,MEDIUM \
+            --format sarif \
+            --output trivy.sarif \
+          && echo "result=pass" >> "$GITHUB_OUTPUT" \
+          || echo "result=fail" >> "$GITHUB_OUTPUT"
 
-      - name: Determine result
-        id: result
+      - name: Generate table report
         if: always()
         run: |
-          if [ "${{ steps.trivy.outcome }}" = "success" ]; then
-            echo "result=pass" >> "$GITHUB_OUTPUT"
-          else
-            echo "result=fail" >> "$GITHUB_OUTPUT"
-          fi
+          trivy fs . \
+            --scanners vuln \
+            --severity CRITICAL,HIGH,MEDIUM \
+            --format table \
+            --output trivy-table.txt || true
 
-      # Also run a table-format scan for the PR comment
-      - name: Generate human-readable report
-        if: always()
-        uses: aquasecurity/trivy-action@6c175e9c4083a92bbca2f9724c8a5e33bc2d97a5
-        with:
-          scan-type: "fs"
-          scan-ref: "."
-          format: "table"
-          output: "trivy-table.txt"
-          severity: "CRITICAL,HIGH,MEDIUM"
-          scanners: "vuln"
-        continue-on-error: true
+      - name: Upload SARIF to Monk CI
+        if: always() && hashFiles('trivy.sarif') != ''
+        run: |
+          /opt/monk-ci/miglet sarif-upload \
+            --file=trivy.sarif \
+            --repo="${{ github.repository }}" \
+            --pr="${{ github.event.pull_request.number || 0 }}" \
+            --sha="${{ github.event.pull_request.head.sha || github.sha }}" \
+            --scan-type=deps \
+            --tool=trivy
 
-      - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        continue-on-error: true
-        with:
-          sarif_file: trivy-results.sarif
-          category: monk-ci-dependencies
-
-      - name: Save results
+      - name: Save result
         if: always()
         run: |
-          echo "${{ steps.result.outputs.result || 'error' }}" > /tmp/trivy-result.txt
+          echo "${{ steps.trivy.outputs.result || 'error' }}" > /tmp/trivy-result.txt
           cp trivy-table.txt /tmp/trivy-table.txt 2>/dev/null || echo "No table output" > /tmp/trivy-table.txt
 
       - name: Upload result artifact
@@ -300,14 +259,12 @@ jobs:
             /tmp/trivy-table.txt
           retention-days: 1
 
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # IaC SCANNING — Checkov (conditional)
-  # Only runs if Terraform / K8s / CloudFormation files exist
-  # Auth: none — pure local policy engine
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # ─────────────────────────────────────────────────────────
+  # Infrastructure Scan — Checkov (CLI install)
+  # ─────────────────────────────────────────────────────────
   iac-scan:
-    name: "☁️ Infrastructure Scan"
-    runs-on: ubuntu-latest          # ← swap to monkci-runners-4vcpu for prod
+    name: "Infrastructure Scan"
+    runs-on: monkci-runners-4vcpu
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -317,39 +274,53 @@ jobs:
         id: detect
         run: |
           HAS_IAC="false"
-          if find . -name "*.tf" | head -1 | grep -q .; then HAS_IAC="true"; echo "  → Terraform detected"; fi
-          if find . -path "*/k8s/*.yml" -o -path "*/k8s/*.yaml" -o -path "*/kubernetes/*.yml" -o -path "*/kubernetes/*.yaml" | head -1 | grep -q .; then HAS_IAC="true"; echo "  → Kubernetes detected"; fi
-          if find . -path "*/helm/*.yml" -o -path "*/helm/*.yaml" | head -1 | grep -q .; then HAS_IAC="true"; echo "  → Helm detected"; fi
-          if find . -name "Dockerfile" | head -1 | grep -q .; then HAS_IAC="true"; echo "  → Dockerfile detected"; fi
+          if find . -name "*.tf" | head -1 | grep -q .; then HAS_IAC="true"; fi
+          if find . -path "*/k8s/*.yml" -o -path "*/k8s/*.yaml" -o -path "*/kubernetes/*.yml" -o -path "*/kubernetes/*.yaml" | head -1 | grep -q .; then HAS_IAC="true"; fi
+          if find . -path "*/helm/*.yml" -o -path "*/helm/*.yaml" | head -1 | grep -q .; then HAS_IAC="true"; fi
+          if find . -name "Dockerfile" | head -1 | grep -q .; then HAS_IAC="true"; fi
           echo "has_iac=$HAS_IAC" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.detect.outputs.has_iac == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Checkov
+        if: steps.detect.outputs.has_iac == 'true'
+        run: pip install checkov==${CHECKOV_VERSION}
 
       - name: Run Checkov
         if: steps.detect.outputs.has_iac == 'true'
         id: checkov
-        uses: bridgecrewio/checkov-action@v12
-        with:
-          directory: "."
-          output_format: sarif
-          output_file_path: checkov-results.sarif
-          soft_fail: true
-          quiet: true
-          skip_check: "CKV_DOCKER_2,CKV_DOCKER_3"
-        continue-on-error: true
+        run: |
+          checkov \
+            --directory . \
+            --output sarif \
+            --output-file-path checkov.sarif \
+            --soft-fail \
+            --quiet \
+            --skip-check CKV_DOCKER_2,CKV_DOCKER_3 \
+          && echo "result=pass" >> "$GITHUB_OUTPUT" \
+          || echo "result=fail" >> "$GITHUB_OUTPUT"
 
-      - name: Upload SARIF
-        if: always() && steps.detect.outputs.has_iac == 'true'
-        uses: github/codeql-action/upload-sarif@v3
-        continue-on-error: true
-        with:
-          sarif_file: checkov-results.sarif
-          category: monk-ci-iac
+      - name: Upload SARIF to Monk CI
+        if: always() && steps.detect.outputs.has_iac == 'true' && hashFiles('checkov.sarif') != ''
+        run: |
+          /opt/monk-ci/miglet sarif-upload \
+            --file=checkov.sarif \
+            --repo="${{ github.repository }}" \
+            --pr="${{ github.event.pull_request.number || 0 }}" \
+            --sha="${{ github.event.pull_request.head.sha || github.sha }}" \
+            --scan-type=iac \
+            --tool=checkov
 
       - name: Save result
         if: always()
         run: |
           if [ "${{ steps.detect.outputs.has_iac }}" = "false" ]; then
             echo "skipped" > /tmp/iac-result.txt
-          elif [ "${{ steps.checkov.outcome }}" = "success" ]; then
+          elif [ "${{ steps.checkov.outputs.result }}" = "pass" ]; then
             echo "pass" > /tmp/iac-result.txt
           else
             echo "fail" > /tmp/iac-result.txt
@@ -363,21 +334,22 @@ jobs:
           path: /tmp/iac-result.txt
           retention-days: 1
 
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # PR SUMMARY COMMENT
-  # Consolidates all scan results into a single PR comment
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # ─────────────────────────────────────────────────────────
+  # PR Summary Comment
+  # ─────────────────────────────────────────────────────────
   summary:
-    name: "📋 Scan Summary"
-    runs-on: ubuntu-latest          # ← swap to monkci-runners-4vcpu for prod
+    name: "Scan Summary"
+    runs-on: monkci-runners-4vcpu
     timeout-minutes: 5
     needs: [secret-detection, code-analysis, dependency-scan, iac-scan]
     if: always()
     steps:
-      - name: Download all result artifacts
+      - name: Download result artifacts
         uses: actions/download-artifact@v4
         with:
           path: /tmp/results
+          pattern: "*-result"
+          merge-multiple: false
         continue-on-error: true
 
       - name: Post PR comment
@@ -387,76 +359,77 @@ jobs:
           script: |
             const fs = require('fs');
 
-            // ── Read results from artifacts ──
-            function readFile(path) {
-              try { return fs.readFileSync(path, 'utf8').trim(); }
+            const readFile = (p) => {
+              try { return fs.readFileSync(p, 'utf8').trim(); }
               catch { return 'error'; }
-            }
-
-            function readJson(path) {
-              try { return JSON.parse(fs.readFileSync(path, 'utf8')); }
+            };
+            const readJson = (p) => {
+              try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
               catch { return null; }
-            }
-
-            const gitleaksResult = readFile('/tmp/results/gitleaks-result/gitleaks-result.txt');
-            const semgrepData = readJson('/tmp/results/semgrep-result/semgrep-result.json');
-            const trivyResult = readFile('/tmp/results/trivy-result/trivy-result.txt');
-            const iacResult = readFile('/tmp/results/iac-result/iac-result.txt');
-
-            // ── Status emoji ──
-            const icon = (r) => {
-              if (r === 'pass' || r === 'success') return '✅';
-              if (r === 'fail' || r === 'failure') return '❌';
-              if (r === 'skipped') return '⏭️';
-              return '⚠️';
             };
 
-            // ── Build table rows ──
+            const gitleaksResult = readFile('/tmp/results/gitleaks-result/gitleaks-result.txt');
+            const semgrepData   = readJson('/tmp/results/semgrep-result/semgrep-result.json');
+            const trivyResult   = readFile('/tmp/results/trivy-result/trivy-result.txt');
+            const iacResult     = readFile('/tmp/results/iac-result/iac-result.txt');
+
+            const statusLabel = (r) => {
+              if (r === 'pass' || r === 'success') return '`PASS`';
+              if (r === 'fail' || r === 'failure') return '`FAIL`';
+              if (r === 'skipped') return '`SKIPPED`';
+              return '`ERROR`';
+            };
+
             const rows = [];
 
-            // Gitleaks
-            rows.push(`| ${icon(gitleaksResult)} | **Secret Detection** | ${gitleaksResult === 'pass' ? 'No secrets found' : gitleaksResult === 'fail' ? '⚠️ Potential secrets detected' : 'Could not complete'} |`);
+            rows.push(`| ${statusLabel(gitleaksResult)} | **Secret Detection** | ${
+              gitleaksResult === 'pass' ? 'No secrets found' :
+              gitleaksResult === 'fail' ? 'Potential secrets detected' :
+              'Could not complete'} |`);
 
-            // Semgrep
             if (semgrepData) {
               const detail = semgrepData.result === 'pass'
                 ? 'No issues found'
                 : `${semgrepData.errors || 0} errors, ${semgrepData.warnings || 0} warnings, ${semgrepData.infos || 0} info`;
-              rows.push(`| ${icon(semgrepData.result)} | **Code Quality & Security** | ${detail} |`);
+              rows.push(`| ${statusLabel(semgrepData.result)} | **Code Quality and Security** | ${detail} |`);
             } else {
-              rows.push(`| ⚠️ | **Code Quality & Security** | Could not complete |`);
+              rows.push(`| \`ERROR\` | **Code Quality and Security** | Could not complete |`);
             }
 
-            // Trivy
-            rows.push(`| ${icon(trivyResult)} | **Dependency Audit** | ${trivyResult === 'pass' ? 'No vulnerable dependencies' : trivyResult === 'fail' ? '⚠️ Vulnerable dependencies found' : 'Could not complete'} |`);
+            rows.push(`| ${statusLabel(trivyResult)} | **Dependency Audit** | ${
+              trivyResult === 'pass' ? 'No vulnerable dependencies' :
+              trivyResult === 'fail' ? 'Vulnerable dependencies found' :
+              'Could not complete'} |`);
 
-            // IaC
             if (iacResult === 'skipped') {
-              rows.push(`| ⏭️ | **Infrastructure Scan** | Skipped — no IaC files detected |`);
+              rows.push(`| \`SKIPPED\` | **Infrastructure Scan** | No IaC files detected |`);
             } else {
-              rows.push(`| ${icon(iacResult)} | **Infrastructure Scan** | ${iacResult === 'pass' ? 'No misconfigurations found' : iacResult === 'fail' ? '⚠️ Misconfigurations detected' : 'Could not complete'} |`);
+              rows.push(`| ${statusLabel(iacResult)} | **Infrastructure Scan** | ${
+                iacResult === 'pass' ? 'No misconfigurations found' :
+                iacResult === 'fail' ? 'Misconfigurations detected' :
+                'Could not complete'} |`);
             }
 
-            // ── Has failures? ──
             const hasFailures = [gitleaksResult, semgrepData?.result, trivyResult, iacResult]
               .some(r => r === 'fail' || r === 'failure');
 
-            // ── Assemble comment ──
+            const logoUrl = 'https://monkci.com/logo.png';
+            const dashboardUrl = `https://monkci.com/shield/repos/${encodeURIComponent(context.repo.repo)}`;
+
             const body = [
-              `##  Monk CI — Security & Quality Report`,
+              `<picture><img src="${logoUrl}" alt="Monk CI" height="20" align="left" style="margin-right: 8px"></picture>  **Monk CI Shield — Security and Quality Report**`,
               ``,
               `| Status | Check | Details |`,
               `|--------|-------|---------|`,
               ...rows,
               ``,
               hasFailures
-                ? `> ❌ **Issues found.** Check the Security tab or expand the workflow logs for details.`
-                : `> ✅ **All checks passed.** No issues detected in this PR.`,
+                ? `**Issues found.** [View full details on the Monk CI dashboard](${dashboardUrl}).`
+                : `**All checks passed.** No issues detected in this pull request.`,
               ``,
-              `<sub>Powered by <a href="https://monkci.com">Monk CI</a> — 10x faster builds with built-in security</sub>`,
+              `<sub><a href="https://monkci.com">Monk CI</a> Shield · faster builds with built-in security</sub>`,
             ].join('\n');
 
-            // ── Post or update comment ──
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -464,7 +437,7 @@ jobs:
             });
 
             const existing = comments.find(c =>
-              c.body && c.body.includes('Monk CI — Security & Quality Report')
+              c.body && c.body.includes('Monk CI Shield — Security and Quality Report')
             );
 
             if (existing) {
@@ -474,7 +447,6 @@ jobs:
                 comment_id: existing.id,
                 body,
               });
-              console.log('Updated existing comment');
             } else {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
@@ -482,5 +454,4 @@ jobs:
                 issue_number: context.issue.number,
                 body,
               });
-              console.log('Created new comment');
             }
