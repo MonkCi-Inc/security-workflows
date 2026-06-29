@@ -28,7 +28,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   secret-detection:
     name: "Secret Detection"
-    runs-on: monkci-runners-4vcpu
+    runs-on: monkci-ubuntu-24.04-2
     timeout-minutes: 5
     steps:
       - name: Checkout
@@ -96,7 +96,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   code-analysis:
     name: "Code Quality and Security"
-    runs-on: monkci-runners-4vcpu
+    runs-on: monkci-ubuntu-24.04-2
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -215,7 +215,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   dependency-scan:
     name: "Dependency Audit"
-    runs-on: monkci-runners-4vcpu
+    runs-on: monkci-ubuntu-24.04-2
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -292,7 +292,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   iac-scan:
     name: "Infrastructure Scan"
-    runs-on: monkci-runners-4vcpu
+    runs-on: monkci-ubuntu-24.04-2
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -379,7 +379,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   summary:
     name: "Scan Summary"
-    runs-on: monkci-runners-4vcpu
+    runs-on: monkci-ubuntu-24.04-2
     timeout-minutes: 5
     needs: [secret-detection, code-analysis, dependency-scan, iac-scan]
     if: always()
