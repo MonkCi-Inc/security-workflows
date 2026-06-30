@@ -322,15 +322,24 @@ jobs:
         if: steps.detect.outputs.has_iac == 'true'
         id: checkov
         run: |
+          # Checkov outputs to a DIRECTORY when --output-file-path is given,
+          # writing results_sarif.sarif inside it. We point it at a dir, then
+          # pull the sarif file out.
+          mkdir -p checkov-out
           checkov \
             --directory . \
             --output sarif \
-            --output-file-path checkov.sarif \
+            --output-file-path checkov-out \
             --soft-fail \
             --quiet \
             --skip-check CKV_DOCKER_2,CKV_DOCKER_3 \
           && echo "result=pass" >> "$GITHUB_OUTPUT" \
           || echo "result=fail" >> "$GITHUB_OUTPUT"
+
+          # Move the SARIF file to a predictable flat name
+          if [ -f checkov-out/results_sarif.sarif ]; then
+            mv checkov-out/results_sarif.sarif checkov.sarif
+          fi
 
       - name: Hand SARIF to miglet
         if: always() && steps.detect.outputs.has_iac == 'true' && hashFiles('checkov.sarif') != ''
@@ -413,16 +422,17 @@ jobs:
             const trivyResult   = readFile('/tmp/results/trivy-result/trivy-result.txt');
             const iacResult     = readFile('/tmp/results/iac-result/iac-result.txt');
 
-            const statusLabel = (r) => {
-              if (r === 'pass' || r === 'success') return '`PASS`';
-              if (r === 'fail' || r === 'failure') return '`FAIL`';
-              if (r === 'skipped') return '`SKIPPED`';
-              return '`ERROR`';
+            // Color-coded badges via shields.io — render in both light & dark mode
+            const statusBadge = (r) => {
+              if (r === 'pass' || r === 'success') return '![PASS](https://img.shields.io/badge/PASS-22c55e?style=flat-square&labelColor=22c55e)';
+              if (r === 'fail' || r === 'failure') return '![FAIL](https://img.shields.io/badge/FAIL-ef4444?style=flat-square&labelColor=ef4444)';
+              if (r === 'skipped')                  return '![SKIPPED](https://img.shields.io/badge/SKIPPED-94a3b8?style=flat-square&labelColor=94a3b8)';
+              return '![ERROR](https://img.shields.io/badge/ERROR-f59e0b?style=flat-square&labelColor=f59e0b)';
             };
 
             const rows = [];
 
-            rows.push(`| ${statusLabel(gitleaksResult)} | **Secret Detection** | ${
+            rows.push(`| ${statusBadge(gitleaksResult)} | **Secret Detection** | ${
               gitleaksResult === 'pass' ? 'No secrets found' :
               gitleaksResult === 'fail' ? 'Potential secrets detected' :
               'Could not complete'} |`);
@@ -431,20 +441,20 @@ jobs:
               const detail = semgrepData.result === 'pass'
                 ? 'No issues found'
                 : `${semgrepData.errors || 0} errors, ${semgrepData.warnings || 0} warnings, ${semgrepData.infos || 0} info`;
-              rows.push(`| ${statusLabel(semgrepData.result)} | **Code Quality and Security** | ${detail} |`);
+              rows.push(`| ${statusBadge(semgrepData.result)} | **Code Quality and Security** | ${detail} |`);
             } else {
-              rows.push(`| \`ERROR\` | **Code Quality and Security** | Could not complete |`);
+              rows.push(`| ${statusBadge('error')} | **Code Quality and Security** | Could not complete |`);
             }
 
-            rows.push(`| ${statusLabel(trivyResult)} | **Dependency Audit** | ${
+            rows.push(`| ${statusBadge(trivyResult)} | **Dependency Audit** | ${
               trivyResult === 'pass' ? 'No vulnerable dependencies' :
               trivyResult === 'fail' ? 'Vulnerable dependencies found' :
               'Could not complete'} |`);
 
             if (iacResult === 'skipped') {
-              rows.push(`| \`SKIPPED\` | **Infrastructure Scan** | No IaC files detected |`);
+              rows.push(`| ${statusBadge('skipped')} | **Infrastructure Scan** | No IaC files detected |`);
             } else {
-              rows.push(`| ${statusLabel(iacResult)} | **Infrastructure Scan** | ${
+              rows.push(`| ${statusBadge(iacResult)} | **Infrastructure Scan** | ${
                 iacResult === 'pass' ? 'No misconfigurations found' :
                 iacResult === 'fail' ? 'Misconfigurations detected' :
                 'Could not complete'} |`);
@@ -453,7 +463,7 @@ jobs:
             const hasFailures = [gitleaksResult, semgrepData?.result, trivyResult, iacResult]
               .some(r => r === 'fail' || r === 'failure');
 
-            const logoUrl = 'https://monkci.com/logo.png';
+            const logoUrl = 'https://monkci.com/brand/logo.png';
             const dashboardUrl = `https://monkci.com/shield/repos/${encodeURIComponent(context.repo.repo)}`;
 
             const body = [
