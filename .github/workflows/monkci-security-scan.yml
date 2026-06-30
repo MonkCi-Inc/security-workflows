@@ -59,7 +59,7 @@ jobs:
       - name: Hand SARIF to miglet
         if: always() && hashFiles('gitleaks.sarif') != ''
         env:
-          REPO: ${{ github.repository }}
+          REPO_ID: ${{ github.repository_id }}
           PR_NUMBER: ${{ github.event.pull_request.number || 0 }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -73,7 +73,7 @@ jobs:
           {
             "tool": "gitleaks",
             "scan_type": "secrets",
-            "repo": "$REPO",
+            "repo_id": "$REPO_ID",
             "pr_number": $PR_NUMBER,
             "commit_sha": "$COMMIT_SHA"
           }
@@ -170,7 +170,7 @@ jobs:
       - name: Hand SARIF to miglet
         if: always() && hashFiles('semgrep.sarif') != ''
         env:
-          REPO: ${{ github.repository }}
+          REPO_ID: ${{ github.repository_id }}
           PR_NUMBER: ${{ github.event.pull_request.number || 0 }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -184,7 +184,7 @@ jobs:
           {
             "tool": "semgrep",
             "scan_type": "code",
-            "repo": "$REPO",
+            "repo_id": "$REPO_ID",
             "pr_number": $PR_NUMBER,
             "commit_sha": "$COMMIT_SHA"
           }
@@ -251,7 +251,7 @@ jobs:
       - name: Hand SARIF to miglet
         if: always() && hashFiles('trivy.sarif') != ''
         env:
-          REPO: ${{ github.repository }}
+          REPO_ID: ${{ github.repository_id }}
           PR_NUMBER: ${{ github.event.pull_request.number || 0 }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -265,7 +265,7 @@ jobs:
           {
             "tool": "trivy",
             "scan_type": "deps",
-            "repo": "$REPO",
+            "repo_id": "$REPO_ID",
             "pr_number": $PR_NUMBER,
             "commit_sha": "$COMMIT_SHA"
           }
@@ -335,7 +335,7 @@ jobs:
       - name: Hand SARIF to miglet
         if: always() && steps.detect.outputs.has_iac == 'true' && hashFiles('checkov.sarif') != ''
         env:
-          REPO: ${{ github.repository }}
+          REPO_ID: ${{ github.repository_id }}
           PR_NUMBER: ${{ github.event.pull_request.number || 0 }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -349,7 +349,7 @@ jobs:
           {
             "tool": "checkov",
             "scan_type": "iac",
-            "repo": "$REPO",
+            "repo_id": "$REPO_ID",
             "pr_number": $PR_NUMBER,
             "commit_sha": "$COMMIT_SHA"
           }
