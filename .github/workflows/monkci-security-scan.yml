@@ -6,6 +6,19 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   workflow_call:
+    inputs:
+      enable_gitleaks:
+        type: boolean
+        default: true
+      enable_semgrep:
+        type: boolean
+        default: true
+      enable_trivy:
+        type: boolean
+        default: true
+      enable_checkov:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -28,6 +41,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   secret-detection:
     name: "Secret Detection"
+    if: ${{ inputs.enable_gitleaks == null || inputs.enable_gitleaks }}
     runs-on: monkci-ubuntu-24.04-4
     timeout-minutes: 5
     steps:
@@ -96,6 +110,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   code-analysis:
     name: "Code Quality and Security"
+    if: ${{ inputs.enable_semgrep == null || inputs.enable_semgrep }}
     runs-on: monkci-ubuntu-24.04-4
     timeout-minutes: 15
     steps:
@@ -215,6 +230,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   dependency-scan:
     name: "Dependency Audit"
+    if: ${{ inputs.enable_trivy == null || inputs.enable_trivy }}
     runs-on: monkci-ubuntu-24.04-4
     timeout-minutes: 10
     steps:
@@ -292,6 +308,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   iac-scan:
     name: "Infrastructure Scan"
+    if: ${{ inputs.enable_checkov == null || inputs.enable_checkov }}
     runs-on: monkci-ubuntu-24.04-4
     timeout-minutes: 10
     steps:
@@ -403,6 +420,13 @@ jobs:
 
       - name: Post PR comment
         uses: actions/github-script@v7
+        env:
+          # These resolve to "true"/"false" strings. When the workflow is run
+          # directly (not via workflow_call) inputs are null → treat as enabled.
+          ENABLE_GITLEAKS: ${{ inputs.enable_gitleaks == null || inputs.enable_gitleaks }}
+          ENABLE_SEMGREP: ${{ inputs.enable_semgrep == null || inputs.enable_semgrep }}
+          ENABLE_TRIVY: ${{ inputs.enable_trivy == null || inputs.enable_trivy }}
+          ENABLE_CHECKOV: ${{ inputs.enable_checkov == null || inputs.enable_checkov }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -417,6 +441,13 @@ jobs:
               catch { return null; }
             };
 
+            const enabled = {
+              gitleaks: process.env.ENABLE_GITLEAKS === 'true',
+              semgrep:  process.env.ENABLE_SEMGREP === 'true',
+              trivy:    process.env.ENABLE_TRIVY === 'true',
+              checkov:  process.env.ENABLE_CHECKOV === 'true',
+            };
+
             const gitleaksResult = readFile('/tmp/results/gitleaks-result/gitleaks-result.txt');
             const semgrepData   = readJson('/tmp/results/semgrep-result/semgrep-result.json');
             const trivyResult   = readFile('/tmp/results/trivy-result/trivy-result.txt');
@@ -427,17 +458,27 @@ jobs:
               if (r === 'pass' || r === 'success') return '![PASS](https://img.shields.io/badge/PASS-22c55e?style=flat-square&labelColor=22c55e)';
               if (r === 'fail' || r === 'failure') return '![FAIL](https://img.shields.io/badge/FAIL-ef4444?style=flat-square&labelColor=ef4444)';
               if (r === 'skipped')                  return '![SKIPPED](https://img.shields.io/badge/SKIPPED-94a3b8?style=flat-square&labelColor=94a3b8)';
+              if (r === 'disabled')                 return '![DISABLED](https://img.shields.io/badge/DISABLED-64748b?style=flat-square&labelColor=64748b)';
               return '![ERROR](https://img.shields.io/badge/ERROR-f59e0b?style=flat-square&labelColor=f59e0b)';
             };
 
+            const disabledRow = (check) =>
+              `| ${statusBadge('disabled')} | **${check}** | Not enabled for this org |`;
+
             const rows = [];
 
-            rows.push(`| ${statusBadge(gitleaksResult)} | **Secret Detection** | ${
-              gitleaksResult === 'pass' ? 'No secrets found' :
-              gitleaksResult === 'fail' ? 'Potential secrets detected' :
-              'Could not complete'} |`);
+            if (!enabled.gitleaks) {
+              rows.push(disabledRow('Secret Detection'));
+            } else {
+              rows.push(`| ${statusBadge(gitleaksResult)} | **Secret Detection** | ${
+                gitleaksResult === 'pass' ? 'No secrets found' :
+                gitleaksResult === 'fail' ? 'Potential secrets detected' :
+                'Could not complete'} |`);
+            }
 
-            if (semgrepData) {
+            if (!enabled.semgrep) {
+              rows.push(disabledRow('Code Quality and Security'));
+            } else if (semgrepData) {
               const detail = semgrepData.result === 'pass'
                 ? 'No issues found'
                 : `${semgrepData.errors || 0} errors, ${semgrepData.warnings || 0} warnings, ${semgrepData.infos || 0} info`;
@@ -446,12 +487,18 @@ jobs:
               rows.push(`| ${statusBadge('error')} | **Code Quality and Security** | Could not complete |`);
             }
 
-            rows.push(`| ${statusBadge(trivyResult)} | **Dependency Audit** | ${
-              trivyResult === 'pass' ? 'No vulnerable dependencies' :
-              trivyResult === 'fail' ? 'Vulnerable dependencies found' :
-              'Could not complete'} |`);
+            if (!enabled.trivy) {
+              rows.push(disabledRow('Dependency Audit'));
+            } else {
+              rows.push(`| ${statusBadge(trivyResult)} | **Dependency Audit** | ${
+                trivyResult === 'pass' ? 'No vulnerable dependencies' :
+                trivyResult === 'fail' ? 'Vulnerable dependencies found' :
+                'Could not complete'} |`);
+            }
 
-            if (iacResult === 'skipped') {
+            if (!enabled.checkov) {
+              rows.push(disabledRow('Infrastructure Scan'));
+            } else if (iacResult === 'skipped') {
               rows.push(`| ${statusBadge('skipped')} | **Infrastructure Scan** | No IaC files detected |`);
             } else {
               rows.push(`| ${statusBadge(iacResult)} | **Infrastructure Scan** | ${
@@ -460,8 +507,12 @@ jobs:
                 'Could not complete'} |`);
             }
 
-            const hasFailures = [gitleaksResult, semgrepData?.result, trivyResult, iacResult]
-              .some(r => r === 'fail' || r === 'failure');
+            const hasFailures = [
+              enabled.gitleaks ? gitleaksResult : null,
+              enabled.semgrep ? semgrepData?.result : null,
+              enabled.trivy ? trivyResult : null,
+              enabled.checkov ? iacResult : null,
+            ].some(r => r === 'fail' || r === 'failure');
 
             const logoUrl = 'https://monkci.com/brand/logo.png';
             const dashboardUrl = `https://monkci.com/shield/repos/${encodeURIComponent(context.repo.repo)}`;
