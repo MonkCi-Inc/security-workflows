@@ -405,7 +405,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   summary:
     name: "Scan Summary"
-    runs-on: monkci-ubuntu-24.04-4
+    runs-on: monkci-ubuntu-24.04-2
     timeout-minutes: 5
     needs: [secret-detection, code-analysis, dependency-scan, iac-scan]
     if: ${{ !cancelled() }}
