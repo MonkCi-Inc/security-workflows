@@ -408,7 +408,7 @@ jobs:
     runs-on: monkci-ubuntu-24.04-4
     timeout-minutes: 5
     needs: [secret-detection, code-analysis, dependency-scan, iac-scan]
-    if: always()
+    if: ${{ !cancelled() }}
     steps:
       - name: Download result artifacts
         uses: actions/download-artifact@v4
