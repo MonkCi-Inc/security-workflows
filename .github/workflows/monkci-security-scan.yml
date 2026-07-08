@@ -41,7 +41,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   secret-detection:
     name: "Secret Detection"
-    if: ${{ inputs.enable_gitleaks == null || inputs.enable_gitleaks }}
+    if: ${{ inputs.enable_gitleaks != false }}
     runs-on: monkci-ubuntu-24.04-4
     timeout-minutes: 5
     steps:
@@ -110,7 +110,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   code-analysis:
     name: "Code Quality and Security"
-    if: ${{ inputs.enable_semgrep == null || inputs.enable_semgrep }}
+    if: ${{ inputs.enable_semgrep != false }}
     runs-on: monkci-ubuntu-24.04-4
     timeout-minutes: 15
     steps:
@@ -230,7 +230,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   dependency-scan:
     name: "Dependency Audit"
-    if: ${{ inputs.enable_trivy == null || inputs.enable_trivy }}
+    if: ${{ inputs.enable_trivy != false }}
     runs-on: monkci-ubuntu-24.04-4
     timeout-minutes: 10
     steps:
@@ -308,7 +308,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
   iac-scan:
     name: "Infrastructure Scan"
-    if: ${{ inputs.enable_checkov == null || inputs.enable_checkov }}
+    if: ${{ inputs.enable_checkov != false }}
     runs-on: monkci-ubuntu-24.04-4
     timeout-minutes: 10
     steps:
@@ -421,12 +421,12 @@ jobs:
       - name: Post PR comment
         uses: actions/github-script@v7
         env:
-          # These resolve to "true"/"false" strings. When the workflow is run
-          # directly (not via workflow_call) inputs are null → treat as enabled.
-          ENABLE_GITLEAKS: ${{ inputs.enable_gitleaks == null || inputs.enable_gitleaks }}
-          ENABLE_SEMGREP: ${{ inputs.enable_semgrep == null || inputs.enable_semgrep }}
-          ENABLE_TRIVY: ${{ inputs.enable_trivy == null || inputs.enable_trivy }}
-          ENABLE_CHECKOV: ${{ inputs.enable_checkov == null || inputs.enable_checkov }}
+          # Job results: 'success' | 'failure' | 'cancelled' | 'skipped'
+          # A 'skipped' result means the tool was disabled by the caller.
+          GITLEAKS_JOB_RESULT: ${{ needs.secret-detection.result }}
+          SEMGREP_JOB_RESULT:  ${{ needs.code-analysis.result }}
+          TRIVY_JOB_RESULT:    ${{ needs.dependency-scan.result }}
+          CHECKOV_JOB_RESULT:  ${{ needs.iac-scan.result }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -441,11 +441,12 @@ jobs:
               catch { return null; }
             };
 
+            // A skipped job means the tool was disabled by the caller.
             const enabled = {
-              gitleaks: process.env.ENABLE_GITLEAKS === 'true',
-              semgrep:  process.env.ENABLE_SEMGREP === 'true',
-              trivy:    process.env.ENABLE_TRIVY === 'true',
-              checkov:  process.env.ENABLE_CHECKOV === 'true',
+              gitleaks: process.env.GITLEAKS_JOB_RESULT !== 'skipped',
+              semgrep:  process.env.SEMGREP_JOB_RESULT  !== 'skipped',
+              trivy:    process.env.TRIVY_JOB_RESULT    !== 'skipped',
+              checkov:  process.env.CHECKOV_JOB_RESULT  !== 'skipped',
             };
 
             const gitleaksResult = readFile('/tmp/results/gitleaks-result/gitleaks-result.txt');
