@@ -56,12 +56,27 @@ jobs:
             | tar -xz -C /usr/local/bin gitleaks
           gitleaks version
 
+      - name: Debug commit range
+        run: |
+          echo "base=${{ github.event.pull_request.base.sha }}"
+          echo "head=${{ github.event.pull_request.head.sha }}"
+          if [ -n "${{ github.event.pull_request.base.sha }}" ] && [ -n "${{ github.event.pull_request.head.sha }}" ]; then
+            git log --oneline "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" || true
+          fi
+
       - name: Run Gitleaks
         id: gitleaks
         run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          if [ -n "$BASE" ] && [ -n "$HEAD" ]; then
+            LOGOPTS="--log-opts=${BASE}..${HEAD}"
+          else
+            LOGOPTS=""
+          fi
+
           gitleaks detect \
-            --source=. \
-            --log-opts="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
+            --source=. $LOGOPTS \
             --report-format=sarif \
             --report-path=gitleaks.sarif \
             --redact \
@@ -157,14 +172,14 @@ jobs:
       - name: Run Semgrep
         id: semgrep
         run: |
+          # Run twice: once for SARIF (for miglet), once for JSON (for counts).
+          # Do NOT rely on semgrep's exit code for pass/fail — derive it from counts.
           semgrep \
             ${{ steps.config.outputs.config }} \
             --sarif --output=semgrep.sarif \
             --exclude=node_modules --exclude=vendor --exclude=.venv \
             --exclude="*.min.js" --exclude="*generated*" \
-            --metrics=off \
-          && echo "result=pass" >> "$GITHUB_OUTPUT" \
-          || echo "result=fail" >> "$GITHUB_OUTPUT"
+            --metrics=off || true
 
           semgrep \
             ${{ steps.config.outputs.config }} \
@@ -173,13 +188,25 @@ jobs:
             --exclude="*.min.js" --exclude="*generated*" \
             --metrics=off || true
 
+          ERRORS=0
+          WARNINGS=0
+          INFOS=0
           if [ -f semgrep.json ]; then
-            ERRORS=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' semgrep.json 2>/dev/null || echo "0")
-            WARNINGS=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep.json 2>/dev/null || echo "0")
-            INFOS=$(jq '[.results[] | select(.extra.severity == "INFO")] | length' semgrep.json 2>/dev/null || echo "0")
-            echo "errors=$ERRORS" >> "$GITHUB_OUTPUT"
-            echo "warnings=$WARNINGS" >> "$GITHUB_OUTPUT"
-            echo "infos=$INFOS" >> "$GITHUB_OUTPUT"
+            ERRORS=$(jq   '[.results[] | select(.extra.severity == "ERROR")]   | length' semgrep.json 2>/dev/null || echo 0)
+            WARNINGS=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep.json 2>/dev/null || echo 0)
+            INFOS=$(jq    '[.results[] | select(.extra.severity == "INFO")]    | length' semgrep.json 2>/dev/null || echo 0)
+          fi
+
+          echo "errors=$ERRORS"     >> "$GITHUB_OUTPUT"
+          echo "warnings=$WARNINGS" >> "$GITHUB_OUTPUT"
+          echo "infos=$INFOS"       >> "$GITHUB_OUTPUT"
+
+          # Fail on ERROR-severity findings. Change condition to
+          # `[ "$((ERRORS+WARNINGS))" -gt 0 ]` if you want warnings to block too.
+          if [ "${ERRORS:-0}" -gt 0 ]; then
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=pass" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Hand SARIF to miglet
@@ -247,9 +274,12 @@ jobs:
       - name: Run Trivy
         id: trivy
         run: |
+          # --exit-code 1 makes trivy exit nonzero when it finds vulnerabilities
+          # at the configured severity levels. Without it, trivy always exits 0.
           trivy fs . \
             --scanners vuln \
             --severity CRITICAL,HIGH,MEDIUM \
+            --exit-code 1 \
             --format sarif \
             --output trivy.sarif \
           && echo "result=pass" >> "$GITHUB_OUTPUT" \
@@ -340,14 +370,14 @@ jobs:
         id: checkov
         run: |
           # Checkov outputs to a DIRECTORY when --output-file-path is given,
-          # writing results_sarif.sarif inside it. We point it at a dir, then
-          # pull the sarif file out.
+          # writing results_sarif.sarif inside it. We drop --soft-fail so the
+          # exit code actually reflects whether misconfigurations were found;
+          # the SARIF file is still written before checkov exits.
           mkdir -p checkov-out
           checkov \
             --directory . \
             --output sarif \
             --output-file-path checkov-out \
-            --soft-fail \
             --quiet \
             --skip-check CKV_DOCKER_2,CKV_DOCKER_3 \
           && echo "result=pass" >> "$GITHUB_OUTPUT" \
@@ -468,6 +498,7 @@ jobs:
 
             const rows = [];
 
+            // Secret Detection
             if (!enabled.gitleaks) {
               rows.push(disabledRow('Secret Detection'));
             } else {
@@ -477,17 +508,24 @@ jobs:
                 'Could not complete'} |`);
             }
 
+            // Code Quality and Security — show counts even on pass
             if (!enabled.semgrep) {
               rows.push(disabledRow('Code Quality and Security'));
             } else if (semgrepData) {
-              const detail = semgrepData.result === 'pass'
+              const e = parseInt(semgrepData.errors   || '0', 10);
+              const w = parseInt(semgrepData.warnings || '0', 10);
+              const i = parseInt(semgrepData.infos    || '0', 10);
+              const detail = (e + w + i) === 0
                 ? 'No issues found'
-                : `${semgrepData.errors || 0} errors, ${semgrepData.warnings || 0} warnings, ${semgrepData.infos || 0} info`;
+                : `${e} errors, ${w} warnings, ${i} info`;
+              // The result string from the job is authoritative; the counts
+              // just add context.
               rows.push(`| ${statusBadge(semgrepData.result)} | **Code Quality and Security** | ${detail} |`);
             } else {
               rows.push(`| ${statusBadge('error')} | **Code Quality and Security** | Could not complete |`);
             }
 
+            // Dependency Audit
             if (!enabled.trivy) {
               rows.push(disabledRow('Dependency Audit'));
             } else {
@@ -497,6 +535,7 @@ jobs:
                 'Could not complete'} |`);
             }
 
+            // Infrastructure Scan
             if (!enabled.checkov) {
               rows.push(disabledRow('Infrastructure Scan'));
             } else if (iacResult === 'skipped') {
