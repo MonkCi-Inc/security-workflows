@@ -547,8 +547,8 @@ jobs:
             const hasFailures = perScanner.some(r => r === 'fail' || r === 'failure');
 
             // ── PR comment (unchanged UX) ──
-            const logoUrl = 'https://monkci.com/brand/logo-new.svg';
-            const dashboardUrl = `https://monkci.com/shield/repos/${encodeURIComponent(context.repo.repo)}`;
+            const logoUrl = 'https://imagedelivery.net/PhNqerx3gQ8QN4sEbyKKpA/44b4ab31-d41f-4174-ac13-885717319b00/w=800';
+            const dashboardUrl = `https://app.monkci.com/t/${encodeURIComponent(context.repo.owner)}/shield/overview`;
 
             const body = [
               `<picture><img src="${logoUrl}" alt="Monk CI" height="20" align="left" style="margin-right: 8px"></picture>  **Monk CI Shield — Security and Quality Report**`,
